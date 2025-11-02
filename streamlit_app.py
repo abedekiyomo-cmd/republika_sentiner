@@ -11,6 +11,19 @@ import time
 import os
 import base64
 import io
+import numpy as np
+from collections import Counter
+import nltk
+from nltk.util import ngrams
+from sklearn.feature_extraction.text import TfidfVectorizer
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, AutoModelForTokenClassification, pipeline
+import torch
+
+# Download NLTK data jika belum ada
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
 
 # ==================== KONFIGURASI GITHUB ====================
 GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")  # Token dari Streamlit secrets
@@ -18,6 +31,350 @@ GITHUB_REPO = "abdfajar/republika_sentiner"
 GITHUB_BRANCH = "main"
 SCRAPPER_RESULT_PATH = "scrapper_result"
 ANALYSIS_PATH = "analisis"
+
+# ==================== KONFIGURASI MODEL ====================
+SENTIMENT_MODEL_NAME = "indolem/indobert-base-uncased"
+NER_MODEL_NAME = "cahya/bert-base-indonesian-NER"
+
+# Cache untuk model
+@st.cache_resource
+def load_sentiment_model():
+    """Load model sentiment analysis"""
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(SENTIMENT_MODEL_NAME)
+        model = AutoModelForSequenceClassification.from_pretrained(SENTIMENT_MODEL_NAME)
+        sentiment_pipeline = pipeline(
+            "sentiment-analysis",
+            model=model,
+            tokenizer=tokenizer
+        )
+        return sentiment_pipeline
+    except Exception as e:
+        st.error(f"Error loading sentiment model: {e}")
+        return None
+
+@st.cache_resource
+def load_ner_model():
+    """Load model NER"""
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(NER_MODEL_NAME)
+        model = AutoModelForTokenClassification.from_pretrained(NER_MODEL_NAME)
+        ner_pipeline = pipeline(
+            "ner",
+            model=model,
+            tokenizer=tokenizer,
+            aggregation_strategy="simple"
+        )
+        return ner_pipeline
+    except Exception as e:
+        st.error(f"Error loading NER model: {e}")
+        return None
+
+# ==================== FUNGSI ANALISIS TEKS ====================
+def preprocess_text(text):
+    """Preprocessing teks untuk analisis"""
+    if not text or pd.isna(text):
+        return ""
+    
+    # Clean text
+    text = re.sub(r'[^\w\s]', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
+    text = text.strip().lower()
+    
+    return text
+
+def predict_sentiment(texts, sentiment_pipeline):
+    """Prediksi sentimen untuk list of texts"""
+    if not sentiment_pipeline:
+        return []
+    
+    results = []
+    for text in texts:
+        if not text or len(text.strip()) < 10:
+            results.append({"label": "NETRAL", "score": 0.5})
+            continue
+        
+        try:
+            # Truncate text jika terlalu panjang
+            truncated_text = text[:512]
+            result = sentiment_pipeline(truncated_text)[0]
+            
+            # Map label ke bahasa Indonesia
+            label_map = {
+                "LABEL_0": "NEGATIF",
+                "LABEL_1": "POSITIF", 
+                "LABEL_2": "NETRAL"
+            }
+            
+            result["label"] = label_map.get(result["label"], result["label"])
+            results.append(result)
+            
+        except Exception as e:
+            st.warning(f"Error predicting sentiment: {e}")
+            results.append({"label": "NETRAL", "score": 0.5})
+    
+    return results
+
+def extract_entities(texts, ner_pipeline):
+    """Extract named entities dari list of texts"""
+    if not ner_pipeline:
+        return []
+    
+    all_entities = []
+    
+    for text in texts:
+        if not text or len(text.strip()) < 10:
+            all_entities.append([])
+            continue
+        
+        try:
+            # Truncate text jika terlalu panjang
+            truncated_text = text[:512]
+            entities = ner_pipeline(truncated_text)
+            
+            # Filter entities dengan score tinggi
+            filtered_entities = [
+                {
+                    "entity": entity["word"],
+                    "type": entity["entity_group"],
+                    "score": entity["score"]
+                }
+                for entity in entities if entity["score"] > 0.8
+            ]
+            
+            all_entities.append(filtered_entities)
+            
+        except Exception as e:
+            st.warning(f"Error extracting entities: {e}")
+            all_entities.append([])
+    
+    return all_entities
+
+def extract_trigrams(texts):
+    """Extract trigrams dari list of texts"""
+    all_trigrams = []
+    
+    for text in texts:
+        if not text:
+            all_trigrams.append([])
+            continue
+        
+        try:
+            # Tokenize
+            tokens = nltk.word_tokenize(text)
+            
+            # Generate trigrams
+            trigrams_list = list(ngrams(tokens, 3))
+            
+            # Convert to string
+            trigram_strings = [' '.join(trigram) for trigram in trigrams_list]
+            all_trigrams.append(trigram_strings)
+            
+        except Exception as e:
+            st.warning(f"Error extracting trigrams: {e}")
+            all_trigrams.append([])
+    
+    return all_trigrams
+
+def calculate_tfidf(texts):
+    """Calculate TF-IDF scores untuk list of texts"""
+    if not texts:
+        return [], []
+    
+    try:
+        # Preprocess texts
+        processed_texts = [preprocess_text(text) for text in texts]
+        
+        # Filter out empty texts
+        valid_texts = [text for text in processed_texts if text and len(text.strip()) > 10]
+        
+        if not valid_texts:
+            return [], []
+        
+        # Calculate TF-IDF
+        vectorizer = TfidfVectorizer(
+            max_features=50,
+            stop_words=None,  # Tidak menggunakan stopwords karena bahasa Indonesia
+            ngram_range=(1, 2)  # Unigrams dan bigrams
+        )
+        
+        tfidf_matrix = vectorizer.fit_transform(valid_texts)
+        feature_names = vectorizer.get_feature_names_out()
+        
+        # Get average TF-IDF scores across all documents
+        tfidf_scores = np.array(tfidf_matrix.mean(axis=0)).flatten()
+        
+        # Create sorted list of (word, score) pairs
+        word_scores = list(zip(feature_names, tfidf_scores))
+        word_scores.sort(key=lambda x: x[1], reverse=True)
+        
+        return word_scores, feature_names
+        
+    except Exception as e:
+        st.warning(f"Error calculating TF-IDF: {e}")
+        return [], []
+
+# ==================== FUNGSI ANALISIS SENTIMEN UTAMA ====================
+def analyze_sentiment_comprehensive(start_date, end_date):
+    """Fungsi utama untuk analisis sentimen yang komprehensif"""
+    
+    # Load data yang difilter
+    keyword_df, results_df, metadata_df = load_and_filter_data(start_date, end_date)
+    
+    if metadata_df.empty:
+        st.warning("Tidak ada data untuk dianalisis")
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    
+    # Load models
+    with st.spinner("Memuat model AI..."):
+        sentiment_pipeline = load_sentiment_model()
+        ner_pipeline = load_ner_model()
+    
+    if not sentiment_pipeline:
+        st.error("Gagal memuat model sentiment analysis")
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    
+    # Prepare texts for analysis
+    texts = []
+    titles = []
+    
+    for idx, row in metadata_df.iterrows():
+        title = row.get('judul', '')
+        content = row.get('konten', '')
+        
+        # Gabungkan judul dan konten untuk analisis
+        combined_text = f"{title}. {content}" if title else content
+        texts.append(combined_text)
+        titles.append(title)
+    
+    # 1. PREDIKSI SENTIMEN
+    st.info("🔍 Melakukan prediksi sentimen...")
+    sentiment_results = predict_sentiment(texts, sentiment_pipeline)
+    
+    sentiment_data = []
+    for i, (title, result) in enumerate(zip(titles, sentiment_results)):
+        sentiment_data.append({
+            'judul': title[:100] + '...' if len(title) > 100 else title,
+            'sentimen': result.get('label', 'NETRAL'),
+            'skor_kepercayaan': round(result.get('score', 0.5), 3)
+        })
+    
+    df_sentiment = pd.DataFrame(sentiment_data)
+    
+    # 2. NAMED ENTITY RECOGNITION (NER)
+    st.info("🏷️ Melakukan ekstraksi entitas...")
+    entities_results = extract_entities(texts, ner_pipeline)
+    
+    # Aggregate entities across all documents
+    entity_counter = Counter()
+    type_counter = Counter()
+    
+    for entities in entities_results:
+        for entity in entities:
+            entity_name = entity['entity']
+            entity_type = entity['type']
+            entity_counter[entity_name] += 1
+            type_counter[entity_type] += 1
+    
+    # Prepare NER results
+    ner_data = []
+    for entity, count in entity_counter.most_common(20):  # Top 20 entities
+        ner_data.append({
+            'entity': entity,
+            'tipe': 'ENTITAS',
+            'frekuensi': count
+        })
+    
+    df_ner = pd.DataFrame(ner_data)
+    
+    # 3. TRIGRAM ANALYSIS
+    st.info("🔤 Melakukan analisis trigram...")
+    trigrams_results = extract_trigrams(texts)
+    
+    # Aggregate trigrams across all documents
+    trigram_counter = Counter()
+    for trigrams in trigrams_results:
+        for trigram in trigrams:
+            trigram_counter[trigram] += 1
+    
+    # Prepare trigram results
+    trigram_data = []
+    for trigram, count in trigram_counter.most_common(15):  # Top 15 trigrams
+        trigram_data.append({
+            'trigram': trigram,
+            'frekuensi': count
+        })
+    
+    df_trigram = pd.DataFrame(trigram_data)
+    
+    # 4. TF-IDF ANALYSIS
+    st.info("📊 Menghitung TF-IDF...")
+    tfidf_scores, feature_names = calculate_tfidf(texts)
+    
+    # Prepare TF-IDF results
+    tfidf_data = []
+    for word, score in tfidf_scores[:20]:  # Top 20 terms
+        tfidf_data.append({
+            'kata_kunci': word,
+            'skor_tfidf': round(score, 4)
+        })
+    
+    df_tfidf = pd.DataFrame(tfidf_data)
+    
+    # Simpan hasil analisis ke GitHub
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Upload hasil analisis ke folder analisis
+        upload_to_github(
+            f"{ANALYSIS_PATH}/sentiment_prediction_{timestamp}.csv",
+            df_sentiment,
+            f"Analisis sentimen {timestamp}"
+        )
+        
+        upload_to_github(
+            f"{ANALYSIS_PATH}/ner_results_{timestamp}.csv",
+            df_ner,
+            f"Analisis NER {timestamp}"
+        )
+        
+        upload_to_github(
+            f"{ANALYSIS_PATH}/trigram_results_{timestamp}.csv",
+            df_trigram,
+            f"Analisis trigram {timestamp}"
+        )
+        
+        upload_to_github(
+            f"{ANALYSIS_PATH}/tfidf_results_{timestamp}.csv",
+            df_tfidf,
+            f"Analisis TF-IDF {timestamp}"
+        )
+        
+        # Simpan summary analisis
+        summary_data = {
+            'timestamp_analisis': timestamp,
+            'total_dokumen': len(metadata_df),
+            'sentimen_positif': len(df_sentiment[df_sentiment['sentimen'] == 'POSITIF']),
+            'sentimen_negatif': len(df_sentiment[df_sentiment['sentimen'] == 'NEGATIF']),
+            'sentimen_netral': len(df_sentiment[df_sentiment['sentimen'] == 'NETRAL']),
+            'total_entitas': len(df_ner),
+            'total_trigram': len(df_trigram),
+            'rentang_tanggal': f"{start_date} to {end_date}"
+        }
+        
+        df_summary = pd.DataFrame([summary_data])
+        upload_to_github(
+            f"{ANALYSIS_PATH}/analysis_summary_{timestamp}.csv",
+            df_summary,
+            f"Summary analisis {timestamp}"
+        )
+        
+        st.success("✅ Hasil analisis berhasil disimpan ke GitHub")
+        
+    except Exception as e:
+        st.error(f"❌ Gagal menyimpan hasil analisis ke GitHub: {str(e)}")
+    
+    return df_sentiment, df_ner, df_trigram, df_tfidf
 
 # ==================== FUNGSI GITHUB ====================
 def get_github_headers():
@@ -466,78 +823,6 @@ def load_and_filter_data(start_date, end_date):
     
     return keyword_df, results_df, metadata_df
 
-# ==================== FUNGSI UNTUK TAB ANALISIS SENTIMEN ====================
-def analyze_sentiment(start_date, end_date):
-    """Fungsi untuk analisis sentimen (placeholder)"""
-    # Load data yang difilter
-    keyword_df, results_df, metadata_df = load_and_filter_data(start_date, end_date)
-    
-    if metadata_df.empty:
-        st.warning("Tidak ada data untuk dianalisis")
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-    
-    # Placeholder untuk Prediksi Sentimen
-    sentiment_prediction = pd.DataFrame({
-        'judul': metadata_df['judul'].head(10) if 'judul' in metadata_df.columns else ['Sample'] * 10,
-        'sentimen': ['Positif', 'Negatif', 'Netral', 'Positif', 'Netral', 'Negatif', 'Positif', 'Netral', 'Positif', 'Negatif'],
-        'skor_kepercayaan': [0.85, 0.78, 0.92, 0.67, 0.88, 0.74, 0.91, 0.82, 0.79, 0.86]
-    })
-    
-    # Placeholder untuk NER (Named Entity Recognition)
-    ner_results = pd.DataFrame({
-        'entity': ['Badan Gizi Nasional', 'Kementerian Kesehatan', 'Pemerintah Indonesia', 'WHO', 'Dokter Spesialis'],
-        'tipe': ['ORGANISASI', 'ORGANISASI', 'ORGANISASI', 'ORGANISASI', 'PROFESI'],
-        'frekuensi': [15, 12, 8, 5, 7]
-    })
-    
-    # Placeholder untuk Trigram
-    trigram_results = pd.DataFrame({
-        'trigram': ['gizi nasional baik', 'stunting anak Indonesia', 'program pemerintah berhasil', 'asupan gizi cukup', 'kesehatan masyarakat meningkat'],
-        'frekuensi': [25, 18, 12, 10, 8]
-    })
-    
-    # Placeholder untuk TF-IDF
-    tfidf_results = pd.DataFrame({
-        'kata_kunci': ['gizi', 'stunting', 'nasional', 'kesehatan', 'program'],
-        'skor_tfidf': [0.85, 0.78, 0.72, 0.68, 0.65]
-    })
-    
-    # Simpan hasil analisis ke GitHub
-    try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Upload hasil analisis ke folder analisis
-        upload_to_github(
-            f"{ANALYSIS_PATH}/sentiment_prediction_{timestamp}.csv",
-            sentiment_prediction,
-            f"Analisis sentimen {timestamp}"
-        )
-        
-        upload_to_github(
-            f"{ANALYSIS_PATH}/ner_results_{timestamp}.csv",
-            ner_results,
-            f"Analisis NER {timestamp}"
-        )
-        
-        upload_to_github(
-            f"{ANALYSIS_PATH}/trigram_results_{timestamp}.csv",
-            trigram_results,
-            f"Analisis trigram {timestamp}"
-        )
-        
-        upload_to_github(
-            f"{ANALYSIS_PATH}/tfidf_results_{timestamp}.csv",
-            tfidf_results,
-            f"Analisis TF-IDF {timestamp}"
-        )
-        
-        st.success("✅ Hasil analisis berhasil disimpan ke GitHub")
-        
-    except Exception as e:
-        st.error(f"❌ Gagal menyimpan hasil analisis ke GitHub: {str(e)}")
-    
-    return sentiment_prediction, ner_results, trigram_results, tfidf_results
-
 # ==================== PROSES UTAMA SCRAPING ====================
 def process_republika_search(keyword, startdate_str, enddate_str):
     if not keyword.strip():
@@ -908,7 +1193,13 @@ def main():
     # ==================== TAB 3: ANALISIS SENTIMEN ====================
     with tab3:
         st.header("🧠 Analisis Sentimen")
-        st.markdown("Analisis sentimen pada artikel yang telah di-scrap")
+        st.markdown("""
+        Analisis sentimen pada artikel yang telah di-scrap menggunakan model AI:
+        - **Sentiment Analysis**: IndoBERT model
+        - **Named Entity Recognition**: BERT-base Indonesian NER
+        - **Trigram Analysis**: Pola kata berurutan
+        - **TF-IDF Analysis**: Kata kunci penting
+        """)
         
         # Input tanggal untuk analisis
         col1, col2 = st.columns(2)
@@ -917,45 +1208,68 @@ def main():
         with col2:
             analysis_end_date = st.date_input("Tanggal Selesai Analisis", value=datetime(2025, 10, 31), key="analysis_end")
         
+        # Peringatan tentang waktu loading model
+        st.info("⚠️ **Note**: Loading model AI pertama kali mungkin memakan waktu beberapa menit.")
+        
         # Tombol untuk analisis
         if st.button("🚀 Analisis Sentimen", type="primary"):
-            with st.spinner("Melakukan analisis sentimen..."):
-                sentiment_prediction, ner_results, trigram_results, tfidf_results = analyze_sentiment(
+            with st.spinner("Melakukan analisis sentimen komprehensif..."):
+                df_sentiment, df_ner, df_trigram, df_tfidf = analyze_sentiment_comprehensive(
                     analysis_start_date, analysis_end_date
                 )
                 
                 # Tampilkan hasil Prediksi Sentimen
                 st.subheader("📊 Prediksi Sentimen")
-                if not sentiment_prediction.empty:
-                    st.dataframe(sentiment_prediction, use_container_width=True)
+                if not df_sentiment.empty:
+                    st.dataframe(df_sentiment, use_container_width=True)
                     
                     # Visualisasi distribusi sentimen
-                    sentiment_counts = sentiment_prediction['sentimen'].value_counts()
-                    st.bar_chart(sentiment_counts)
+                    sentiment_counts = df_sentiment['sentimen'].value_counts()
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.bar_chart(sentiment_counts)
+                    
+                    with col2:
+                        # Pie chart menggunakan bar chart sebagai alternatif
+                        st.write("**Distribusi Sentimen**")
+                        for sentimen, count in sentiment_counts.items():
+                            st.write(f"- {sentimen}: {count} artikel")
+                    
+                    # Statistik sentimen
+                    total_articles = len(df_sentiment)
+                    positive_pct = (len(df_sentiment[df_sentiment['sentimen'] == 'POSITIF']) / total_articles) * 100
+                    negative_pct = (len(df_sentiment[df_sentiment['sentimen'] == 'NEGATIF']) / total_articles) * 100
+                    neutral_pct = (len(df_sentiment[df_sentiment['sentimen'] == 'NETRAL']) / total_articles) * 100
+                    
+                    st.metric("Sentimen Positif", f"{positive_pct:.1f}%")
+                    st.metric("Sentimen Negatif", f"{negative_pct:.1f}%")
+                    st.metric("Sentimen Netral", f"{neutral_pct:.1f}%")
+                    
                 else:
                     st.warning("Tidak ada data prediksi sentimen")
                 
                 # Tampilkan hasil NER
                 st.subheader("🏷️ Named Entity Recognition (NER)")
-                if not ner_results.empty:
-                    st.dataframe(ner_results, use_container_width=True)
+                if not df_ner.empty:
+                    st.dataframe(df_ner, use_container_width=True)
+                    st.bar_chart(df_ner.set_index('entity')['frekuensi'].head(10))
                 else:
                     st.warning("Tidak ada data NER")
                 
                 # Tampilkan hasil Trigram
                 st.subheader("🔤 Trigram Analysis")
-                if not trigram_results.empty:
-                    st.dataframe(trigram_results, use_container_width=True)
+                if not df_trigram.empty:
+                    st.dataframe(df_trigram, use_container_width=True)
+                    st.bar_chart(df_trigram.set_index('trigram')['frekuensi'].head(10))
                 else:
                     st.warning("Tidak ada data trigram")
                 
                 # Tampilkan hasil TF-IDF
                 st.subheader("📊 TF-IDF Analysis")
-                if not tfidf_results.empty:
-                    st.dataframe(tfidf_results, use_container_width=True)
-                    
-                    # Visualisasi TF-IDF
-                    st.bar_chart(tfidf_results.set_index('kata_kunci')['skor_tfidf'])
+                if not df_tfidf.empty:
+                    st.dataframe(df_tfidf, use_container_width=True)
+                    st.bar_chart(df_tfidf.set_index('kata_kunci')['skor_tfidf'].head(10))
                 else:
                     st.warning("Tidak ada data TF-IDF")
     

@@ -339,7 +339,7 @@ def process_republika_search(keyword, startdate_str, enddate_str):
     df_metadata = pd.DataFrame(articles_metadata)
     
     # Simpan ke CSV dengan nama file spesifik (seperti sebelumnya)
-    csv_dir = "scraping_results"
+    csv_dir = "scrapper_result"
     os.makedirs(csv_dir, exist_ok=True)
     
     keyword_csv_path = os.path.join(csv_dir, f"keyword_search_{search_id}.csv")
@@ -487,14 +487,14 @@ def main():
             # Informasi file tersimpan
             st.info(f"""
             **📁 File CSV Tersimpan:**
-            - `scraping_results/keyword_search_{search_id}.csv`
-            - `scraping_results/search_results_{search_id}.csv`
-            - `scraping_results/article_metadata_{search_id}.csv`
+            - `scrapper_result/keyword_search_{search_id}.csv`
+            - `scrapper_result/search_results_{search_id}.csv`
+            - `scrapper_result/article_metadata_{search_id}.csv`
             
             **📥 Data juga ditambahkan ke file utama:**
-            - `scraping_results/keyword_search.csv`
-            - `scraping_results/search_results.csv`
-            - `scraping_results/article_metadata.csv`
+            - `scrapper_result/keyword_search.csv`
+            - `scrapper_result/search_results.csv`
+            - `scrapper_result/article_metadata.csv`
             """)
     
     # Footer

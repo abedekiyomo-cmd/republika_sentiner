@@ -1,5 +1,28 @@
+# Web Framework & UI
 streamlit>=1.28.0
+
+# Web Scraping & HTTP
 requests>=2.31.0
 beautifulsoup4>=4.12.0
+
+# Data Manipulation & Analysis
 pandas>=2.0.0
-lxml>=4.9.0
+numpy>=1.24.0
+
+# Natural Language Processing
+nltk>=3.8.0
+scikit-learn>=1.2.0
+
+# Machine Learning & AI
+transformers>=4.30.0
+torch>=2.0.0
+tokenizers>=0.13.0
+
+# Date & Time Handling
+python-dateutil>=2.8.2
+
+# URL Handling
+urllib3>=1.26.0
+
+# Hash & Encoding
+hashlib-blake3>=1.1.1

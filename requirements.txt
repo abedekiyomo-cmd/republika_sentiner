@@ -5,13 +5,13 @@ streamlit==1.38.0
 requests==2.31.0
 beautifulsoup4==4.12.2
 
-# Machine Learning Core
+# ML Core
 scikit-learn==1.5.2
 numpy==1.26.4
 scipy==1.16.3
 joblib==1.5.2
 threadpoolctl==3.6.0
-pandas>=1.5.0
+pandas>=2.3.0
 
 # Visualization
 matplotlib
@@ -20,9 +20,9 @@ seaborn
 # NLP
 nltk==3.8.1
 
-# Transformers / HuggingFace
+# HuggingFace
 transformers==4.40.0
-tokenizers==0.14.1
+tokenizers==0.19.1   # COMPATIBLE with transformers 4.40
 
 # PyTorch (Python 3.13 compatible)
 torch==2.5.1
@@ -30,4 +30,4 @@ torch==2.5.1
 # Misc
 python-dateutil==2.8.2
 urllib3==2.0.7
-hashlib-blake3==1.1.1
+blake3==0.4.1   # the correct package name

@@ -22,12 +22,11 @@ nltk==3.8.1
 
 # HuggingFace
 transformers==4.40.0
-tokenizers==0.19.1   # COMPATIBLE with transformers 4.40
+tokenizers==0.19.1
 
 # PyTorch (Python 3.13 compatible)
 torch==2.5.1
 
-# Misc
+# Date / URL utils
 python-dateutil==2.8.2
 urllib3==2.0.7
-blake3==0.4.1   # the correct package name
